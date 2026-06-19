@@ -97,7 +97,7 @@ function SectionsPage() {
         </div>
       )}
 
-      <SectionDialog open={open} onOpenChange={setOpen} section={editing} />
+      <SectionDialog key={editing?.id ?? "new"} open={open} onOpenChange={setOpen} section={editing} />
     </AppShell>
   );
 }
@@ -191,16 +191,6 @@ function SectionDialog({
     sort_order: section?.sort_order ?? 0,
   });
 
-  // re-init when section changes
-  useState(() => {
-    setForm({
-      name: section?.name ?? "",
-      description: section?.description ?? "",
-      icon: section?.icon ?? "folder",
-      color: section?.color ?? COLORS[0],
-      sort_order: section?.sort_order ?? 0,
-    });
-  });
 
   const save = useMutation({
     mutationFn: async () => {
