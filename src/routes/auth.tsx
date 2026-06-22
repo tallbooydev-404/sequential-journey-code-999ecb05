@@ -2,6 +2,7 @@ import { createFileRoute, useNavigate, Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { lovable } from "@/integrations/lovable";
+import { resolveLoginEmail } from "@/lib/auth-resolve.functions";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -36,7 +37,17 @@ function AuthPage() {
   const handleSignIn = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    // Support email, "tg<chatId>", or Telegram username.
+    let loginEmail = email;
+    if (!email.includes("@")) {
+      try {
+        const res = await resolveLoginEmail({ data: { login: email } });
+        if (res.email) loginEmail = res.email;
+      } catch {
+        // fall through; supabase will return its own error
+      }
+    }
+    const { error } = await supabase.auth.signInWithPassword({ email: loginEmail, password });
     setLoading(false);
     if (error) return toast.error(error.message);
     toast.success("Xush kelibsiz!");
@@ -106,8 +117,18 @@ function AuthPage() {
               <TabsContent value="signin">
                 <form onSubmit={handleSignIn} className="space-y-4 pt-4">
                   <div className="space-y-2">
-                    <Label htmlFor="email">Email</Label>
-                    <Input id="email" type="email" required value={email} onChange={(e) => setEmail(e.target.value)} />
+                    <Label htmlFor="email">Email yoki Telegram username</Label>
+                    <Input
+                      id="email"
+                      type="text"
+                      required
+                      placeholder="email@example.com yoki tg123456789"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Telegram orqali ro'yxatdan o'tgan bo'lsangiz, bot bergan login (<code>tg…</code>) yoki Telegram username'ingizdan foydalaning.
+                    </p>
                   </div>
                   <div className="space-y-2">
                     <Label htmlFor="password">Parol</Label>
