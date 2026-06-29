@@ -128,6 +128,24 @@ async function answerCallback(callbackQueryId: string) {
   return res.ok;
 }
 
+function publicProvisioningError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+
+  if (message.includes("Missing Supabase environment variable")) {
+    return `${message} Cloudflare Worker secrets ichida SUPABASE_URL yoki VITE_SUPABASE_URL va SUPABASE_SERVICE_ROLE_KEY borligini tekshiring.`;
+  }
+
+  if (message.includes("telegram_pending_registrations")) {
+    return "Supabase migration ishlatilmagan: telegram_pending_registrations jadvali topilmadi.";
+  }
+
+  if (message.includes("profiles") || message.includes("user_roles")) {
+    return "Supabase migration yoki profile trigger sozlamalarida muammo bor. profiles va user_roles jadvallarini tekshiring.";
+  }
+
+  return "Supabase admin so'rovi bajarilmadi. Cloudflare logs ichidagi aniq xatoni tekshiring.";
+}
+
 
 export const Route = createFileRoute("/api/public/telegram/webhook")({
   server: {
@@ -305,7 +323,7 @@ Bekor qilish: /cancel`,
             console.error(error);
             await tgSend(
               chatId,
-              "❌ Hisob yaratishda xatolik. Supabase sozlamalari va TELEGRAM_BOT_TOKEN/ADMIN_ID Cloudflare env qiymatlarini tekshiring.",
+              `❌ Hisob yaratishda xatolik: ${publicProvisioningError(error)}`,
             );
           
           }
