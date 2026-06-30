@@ -2,6 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 
 const TG_API = "https://api.telegram.org";
 const TELEGRAM_PATH_TOKEN_HEADER = "X-Internal-Telegram-Path-Token";
+const TELEGRAM_ENV_DIAG_HEADER = "X-Internal-Env-Diag";
 
 type TelegramFrom = {
   username?: string;
@@ -128,22 +129,31 @@ async function answerCallback(callbackQueryId: string) {
   return res.ok;
 }
 
-function publicProvisioningError(error: unknown) {
+function envDiagnostics(request: Request) {
+  const processSupabaseUrl = Boolean(process.env.SUPABASE_URL ?? process.env.VITE_SUPABASE_URL);
+  const processSupabaseServiceRole = Boolean(process.env.SUPABASE_SERVICE_ROLE_KEY);
+  const workerDiag = request.headers.get(TELEGRAM_ENV_DIAG_HEADER);
+
+  return `Diag: v3 process_url=${processSupabaseUrl ? "yes" : "no"} process_service=${processSupabaseServiceRole ? "yes" : "no"} worker=${workerDiag ?? "none"}`;
+}
+
+function publicProvisioningError(error: unknown, request: Request) {
   const message = error instanceof Error ? error.message : String(error);
+  const diag = envDiagnostics(request);
 
   if (message.includes("Missing Supabase environment variable")) {
-    return `${message} Cloudflare Worker secrets ichida SUPABASE_URL yoki VITE_SUPABASE_URL va SUPABASE_SERVICE_ROLE_KEY borligini tekshiring.`;
+    return `${message} Cloudflare Worker secrets ichida SUPABASE_URL yoki VITE_SUPABASE_URL va SUPABASE_SERVICE_ROLE_KEY borligini tekshiring.\n\n${diag}`;
   }
 
   if (message.includes("telegram_pending_registrations")) {
-    return "Supabase migration ishlatilmagan: telegram_pending_registrations jadvali topilmadi.";
+    return `Supabase migration ishlatilmagan: telegram_pending_registrations jadvali topilmadi.\n\n${diag}`;
   }
 
   if (message.includes("profiles") || message.includes("user_roles")) {
-    return "Supabase migration yoki profile trigger sozlamalarida muammo bor. profiles va user_roles jadvallarini tekshiring.";
+    return `Supabase migration yoki profile trigger sozlamalarida muammo bor. profiles va user_roles jadvallarini tekshiring.\n\n${diag}`;
   }
 
-  return "Supabase admin so'rovi bajarilmadi. Cloudflare logs ichidagi aniq xatoni tekshiring.";
+  return `Supabase admin so'rovi bajarilmadi. Cloudflare logs ichidagi aniq xatoni tekshiring.\n\n${diag}`;
 }
 
 
@@ -323,7 +333,7 @@ Bekor qilish: /cancel`,
             console.error(error);
             await tgSend(
               chatId,
-              `❌ Hisob yaratishda xatolik: ${publicProvisioningError(error)}`,
+              `❌ Hisob yaratishda xatolik: ${publicProvisioningError(error, request)}`,
             );
           
           }

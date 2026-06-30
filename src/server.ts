@@ -13,6 +13,7 @@ declare global {
 }
 
 const TELEGRAM_PATH_TOKEN_HEADER = "X-Internal-Telegram-Path-Token";
+const TELEGRAM_ENV_DIAG_HEADER = "X-Internal-Env-Diag";
 const TELEGRAM_TOKEN_PATH_RE = /^\d+:[A-Za-z0-9_-]{20,}$/;
 
 let serverEntryPromise: Promise<ServerEntry> | undefined;
@@ -81,6 +82,13 @@ function maybeRewriteTelegramTokenWebhook(request: Request, env: unknown): Reque
   url.pathname = "/api/public/telegram/webhook";
   const headers = new Headers(request.headers);
   headers.set(TELEGRAM_PATH_TOKEN_HEADER, normalizedPath);
+  headers.set(
+    TELEGRAM_ENV_DIAG_HEADER,
+    JSON.stringify({
+      workerSupabaseServiceRole: Boolean(runtimeEnv(env).SUPABASE_SERVICE_ROLE_KEY),
+      workerSupabaseUrl: Boolean(runtimeEnv(env).SUPABASE_URL ?? runtimeEnv(env).VITE_SUPABASE_URL),
+    }),
+  );
 
   return new Request(url.toString(), {
     body: request.body,
