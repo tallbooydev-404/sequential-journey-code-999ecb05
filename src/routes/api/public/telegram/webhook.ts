@@ -42,14 +42,15 @@ function appButton(fallbackUrl?: string) {
     inline_keyboard: [[{ text: "📱 Ilovani ochish", web_app: { url } }]],
   };
 }
-  async function tgSend(
+
+  async function tgSendWithToken(
+  token: string | undefined,
   chatId: number,
   text: string,
   withButton = false,
   replyMarkup?: Record<string, unknown>,
   fallbackAppUrl?: string,
 ) {
-  const token = getWorkerRuntime().botToken;
   if (!token) return false;
   const body: Record<string, unknown> = {
     chat_id: chatId,
@@ -68,6 +69,23 @@ function appButton(fallbackUrl?: string) {
     body: JSON.stringify(body),
   });
   return res.ok;
+}
+
+async function tgSend(
+  chatId: number,
+  text: string,
+  withButton = false,
+  replyMarkup?: Record<string, unknown>,
+  fallbackAppUrl?: string,
+) {
+  return tgSendWithToken(
+    getWorkerRuntime().botToken,
+    chatId,
+    text,
+    withButton,
+    replyMarkup,
+    fallbackAppUrl,
+  );
 }
 
 function emailForChat(chatId: number) {
@@ -119,8 +137,7 @@ Vazifa Tizimi xizmatidan foydalanish uchun Telegram profilingizdagi asosiy ma'lu
 Ruxsat bersangiz, ro'yxatdan o'tishni Telegram ichida davom ettiramiz.`;
 }
 
-async function answerCallback(callbackQueryId: string) {
-  const token = getWorkerRuntime().botToken;
+async function answerCallback(callbackQueryId: string, token = getWorkerRuntime().botToken) {
   if (!token) return false;
   const res = await fetch(`${TG_API}/bot${token}/answerCallbackQuery`, {
     method: "POST",
@@ -163,9 +180,20 @@ export const Route = createFileRoute("/api/public/telegram/webhook")({
       POST: async ({ request }) => {
         const runtime = getWorkerRuntime();
         const token = runtime.botToken ?? request.headers.get(TELEGRAM_PATH_TOKEN_HEADER) ?? undefined;
-        if (!token) return new Response("Not configured", { status: 500 });
-
-        const expectedSecret = runtime.telegramWebhookSecret;
+        if (!token) {
+          console.error("[Telegram webhook] Missing TELEGRAM_BOT_TOKEN secret.");
+          return Response.json({ ok: true, configured: false, error: "missing_bot_token" });
+        }
+        let chatId: number | undefined;
+        const send = (
+          targetChatId: number,
+          text: string,
+          withButton = false,
+          replyMarkup?: Record<string, unknown>,
+          fallbackAppUrl?: string,
+        ) => tgSendWithToken(token, targetChatId, text, withButton, replyMarkup, fallbackAppUrl);
+        try {
+          const expectedSecret = runtime.telegramWebhookSecret;
         if (expectedSecret) {
           const got = request.headers.get("X-Telegram-Bot-Api-Secret-Token");
           if (got !== expectedSecret) {
@@ -183,7 +211,7 @@ export const Route = createFileRoute("/api/public/telegram/webhook")({
         const message = update.message ?? update.edited_message ?? callbackQuery?.message;
         if (!message?.chat?.id) return Response.json({ ok: true, ignored: true });
 
-        const chatId: number = message.chat.id;
+        chatId = message.chat.id;
         const from = callbackQuery?.from ?? message.from;
         const fromUsername: string | undefined = from?.username;
         const fromFirstName: string | undefined = from?.first_name;
@@ -258,16 +286,16 @@ export const Route = createFileRoute("/api/public/telegram/webhook")({
         };
 
         // ---------- Consent callbacks ----------
-        if (callbackQuery?.id) await answerCallback(callbackQuery.id);
+        if (callbackQuery?.id) await answerCallback(callbackQuery.id, token);
 
         if (callbackData === "consent:retry") {
-          await tgSend(chatId, consentText(fromFirstName), false, consentKeyboard());
+          await send(chatId, consentText(fromFirstName), false, consentKeyboard());
           return Response.json({ ok: true });
         }
 
         if (callbackData === "consent:no") {
           await supabaseAdmin.from("telegram_pending_registrations").delete().eq("chat_id", chatId);
-          await tgSend(
+          await send(
             chatId,
             `ℹ️ Xizmatdan foydalanish uchun Telegram ID, ism va username kabi ma'lumotlar ro'yxatdan o'tish va bildirishnomalarni yuborish uchun kerak bo'ladi. Rozilik bermasangiz, bot orqali ro'yxatdan o'tish davom etmaydi.
 
@@ -282,7 +310,7 @@ Fikringiz o'zgarsa, pastdagi tugma orqali so'rovni qayta oching.`,
         if (callbackData === "consent:yes") {
           const existing = await linkedProfile();
           if (existing) {
-            await tgSend(
+            await send(
               chatId,
               "✅ Sizning ma'lumotlaringiz allaqachon saqlangan va hisobingiz ulangan. Ilovani ochish uchun pastdagi tugmani bosing.",
               true,
@@ -298,7 +326,7 @@ Fikringiz o'zgarsa, pastdagi tugma orqali so'rovni qayta oching.`,
             },
             { onConflict: "chat_id" },
           );
-          await tgSend(
+          await send(
             chatId,
             `✅ Ruxsat qabul qilindi va Telegram ma'lumotlaringiz ro'yxatdan o'tish uchun saqlandi.
 
@@ -319,7 +347,7 @@ Bekor qilish: /cancel`,
               .from("telegram_pending_registrations")
               .delete()
               .eq("chat_id", chatId);
-            await tgSend(
+            await send(
               chatId,
               `👋 Salom, <b>${profile.full_name ?? fromFirstName ?? "do'st"}</b>!\n\n${created ? "✅ Hisobingiz yaratildi va web ilova bilan ulandi." : "✅ Hisobingiz web ilova bilan ulangan."}${isAdminChat(chatId) ? "\n\n🛡 Sizga admin huquqi berildi." : ""}\n\n${loginText(chatId, profile.telegram_username ?? tgUser)}\n\nIlovani Telegramda ochish uchun pastdagi tugmani bosing 👇`,
               true,
@@ -328,7 +356,7 @@ Bekor qilish: /cancel`,
             );
           } catch (error) {
             console.error(error);
-            await tgSend(
+            await send(
               chatId,
               `❌ Hisob yaratishda xatolik: ${publicProvisioningError(error, request)}`,
             );
@@ -339,14 +367,14 @@ Bekor qilish: /cancel`,
 
         if (text === "/cancel") {
           await supabaseAdmin.from("telegram_pending_registrations").delete().eq("chat_id", chatId);
-          await tgSend(chatId, "❌ Bekor qilindi. /start");
+          await send(chatId, "❌ Bekor qilindi. /start");
           return Response.json({ ok: true });
         }
 
 
         if (text === "/link") {
           if (!fromUsername) {
-            await tgSend(
+            await send(
               chatId,
               "❌ Telegram username sozlanmagan. Sozlamalardan username qo'shing.",
             );
@@ -358,14 +386,14 @@ Bekor qilish: /cancel`,
             .ilike("telegram_username", fromUsername)
             .maybeSingle();
           if (!profile) {
-            await tgSend(
+            await send(
               chatId,
               `❌ Web hisobingizda <code>${fromUsername}</code> username topilmadi. Web ilovaga kiring va Sozlamalar → Telegram username qatoriga shu username'ni kiriting. Yoki /register orqali yangi hisob oching.`,
             );
             return Response.json({ ok: true });
           }
           await supabaseAdmin.from("profiles").update({ telegram_id: chatId }).eq("id", profile.id);
-          await tgSend(
+          await send(
             chatId,
             `✅ <b>${profile.full_name ?? fromUsername}</b>, hisobingiz ulandi!`,
             true,
@@ -383,14 +411,14 @@ Bekor qilish: /cancel`,
         if (pending?.step === "await_name") {
           const name = text.slice(0, 80);
           if (name.length < 2 || name.startsWith("/")) {
-            await tgSend(chatId, "❌ Ism kamida 2 belgi bo'lsin. Qayta yuboring.");
+            await send(chatId, "❌ Ism kamida 2 belgi bo'lsin. Qayta yuboring.");
             return Response.json({ ok: true });
           }
           await supabaseAdmin
             .from("telegram_pending_registrations")
             .update({ full_name: name, step: "await_password" })
             .eq("chat_id", chatId);
-          await tgSend(
+          await send(
             chatId,
             "🔐 2/2: Endi <b>parol</b> tanlang (kamida 6 belgi). Bu parol bilan web saytga ham kira olasiz.\n\nBekor qilish: /cancel",
           );
@@ -400,7 +428,7 @@ Bekor qilish: /cancel`,
         if (pending?.step === "await_password") {
           const password = text;
           if (password.length < 6 || password.startsWith("/")) {
-            await tgSend(chatId, "❌ Parol kamida 6 belgi bo'lsin. Qayta yuboring.");
+            await send(chatId, "❌ Parol kamida 6 belgi bo'lsin. Qayta yuboring.");
             return Response.json({ ok: true });
           }
 
@@ -461,7 +489,7 @@ Bekor qilish: /cancel`,
 
             await supabaseAdmin.from("telegram_pending_registrations").delete().eq("chat_id", chatId);
 
-            await tgSend(
+            await send(
               chatId,
               `✅ <b>Tabriklaymiz, ${fullName}!</b>\n\n${createdAccount ? "Hisobingiz yaratildi" : "Mavjud hisobingiz yangilandi"} va botga ulandi.\n\n🔑 <b>Sizning kodingiz:</b> <code>tg${chatId}</code>\n\n🌐 <b>Web saytga kirish:</b>\n• Login (username): <code>tg${chatId}</code>${tgUser ? " yoki <code>" + tgUser + "</code>" : ""}\n• Parol: o'zingiz tanlagan parol${isAdminChat(chatId) ? "\n\n🛡 Sizga admin huquqi berildi." : ""}\n\nIlovani Telegramda ochish uchun pastdagi tugmani bosing 👇`,
               true,
@@ -470,7 +498,7 @@ Bekor qilish: /cancel`,
             );
           } catch (error) {
             console.error(error);
-            await tgSend(
+            await send(
               chatId,
               `❌ Ro'yxatdan o'tishda xatolik: ${publicProvisioningError(error, request)}\n\nQayta urinib ko'ring: /register`,
             );
@@ -479,8 +507,18 @@ Bekor qilish: /cancel`,
         }
 
         // Fallback
-        await tgSend(chatId, "Tushunmadim. Buyruqlar: /start /register /link /help");
-        return Response.json({ ok: true });
+        await send(chatId, "Tushunmadim. Buyruqlar: /start /register /link /help");
+          return Response.json({ ok: true });
+        } catch (error) {
+          console.error("[Telegram webhook] Unhandled error", error);
+          if (chatId) {
+            await send(
+              chatId,
+              `❌ Bot ichki xatolikka uchradi, lekin webhook 200 qaytardi. Tafsilot: ${publicProvisioningError(error, request)}`,
+            ).catch((sendError) => console.error("[Telegram webhook] Failed to send error message", sendError));
+          }
+          return Response.json({ ok: true, handled: false, error: "internal_error" });
+        }
       },
     },
   },
