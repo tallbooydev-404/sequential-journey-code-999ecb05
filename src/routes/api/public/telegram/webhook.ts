@@ -34,16 +34,34 @@ function getMiniAppUrl(): string | null {
   return getWorkerRuntime().miniAppUrl || null;
 }
 
+function normalizeHttpsUrl(value?: string | null): string | null {
+  if (!value) return null;
+  try {
+    const url = new URL(value.trim());
+    return url.protocol === "https:" ? url.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
 function appButton(fallbackUrl?: string) {
-  const url = getMiniAppUrl() ?? fallbackUrl ?? null;
-  if (!url) return undefined;
+  const configuredUrl = getMiniAppUrl();
+  const url = normalizeHttpsUrl(configuredUrl) ?? normalizeHttpsUrl(fallbackUrl);
+  if (!url) {
+    if (configuredUrl || fallbackUrl) {
+      console.error(
+        `[Telegram webhook] Ignoring invalid MINI_APP_URL/fallback URL. Telegram web_app buttons require an absolute HTTPS URL.`,
+      );
+    }
+    return undefined;
+  }
   // WebApp button only works over HTTPS. Telegram opens it inside Telegram.
   return {
     inline_keyboard: [[{ text: "📱 Ilovani ochish", web_app: { url } }]],
   };
 }
 
-  async function tgSendWithToken(
+async function tgSendWithToken(
   token: string | undefined,
   chatId: number,
   text: string,
