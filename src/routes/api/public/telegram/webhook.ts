@@ -1,4 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { getWorkerRuntime } from "@/lib/worker-runtime";
 
 const TG_API = "https://api.telegram.org";
 const TELEGRAM_PATH_TOKEN_HEADER = "X-Internal-Telegram-Path-Token";
@@ -30,7 +31,7 @@ type TelegramUpdate = {
 
 
 function getMiniAppUrl(): string | null {
-  return process.env.MINI_APP_URL || process.env.VITE_MINI_APP_URL || null;
+  return getWorkerRuntime().miniAppUrl || null;
 }
 
 function appButton(fallbackUrl?: string) {
@@ -48,7 +49,7 @@ function appButton(fallbackUrl?: string) {
   replyMarkup?: Record<string, unknown>,
   fallbackAppUrl?: string,
 ) {
-  const token = process.env.TELEGRAM_BOT_TOKEN;
+  const token = getWorkerRuntime().botToken;
   if (!token) return false;
   const body: Record<string, unknown> = {
     chat_id: chatId,
@@ -76,7 +77,7 @@ const DEFAULT_TELEGRAM_PASSWORD = "Applicant001";
 
 function adminIds(): Set<string> {
   return new Set(
-    (process.env.ADMIN_ID ?? process.env.TELEGRAM_ADMIN_ID ?? "")
+    (getWorkerRuntime().telegramAdminIds ?? "")
       .split(/[\s,;]+/)
       .map((id) => id.trim())
       .filter(Boolean),
@@ -119,7 +120,7 @@ Ruxsat bersangiz, ro'yxatdan o'tishni Telegram ichida davom ettiramiz.`;
 }
 
 async function answerCallback(callbackQueryId: string) {
-  const token = process.env.TELEGRAM_BOT_TOKEN;
+  const token = getWorkerRuntime().botToken;
   if (!token) return false;
   const res = await fetch(`${TG_API}/bot${token}/answerCallbackQuery`, {
     method: "POST",
@@ -130,11 +131,10 @@ async function answerCallback(callbackQueryId: string) {
 }
 
 function envDiagnostics(request: Request) {
-  const processSupabaseUrl = Boolean(process.env.SUPABASE_URL ?? process.env.VITE_SUPABASE_URL);
-  const processSupabaseServiceRole = Boolean(process.env.SUPABASE_SERVICE_ROLE_KEY);
+  const runtime = getWorkerRuntime();
   const workerDiag = request.headers.get(TELEGRAM_ENV_DIAG_HEADER);
 
-  return `Diag: v3 process_url=${processSupabaseUrl ? "yes" : "no"} process_service=${processSupabaseServiceRole ? "yes" : "no"} worker=${workerDiag ?? "none"}`;
+  return `Diag: v4 runtime_url=${runtime.supabaseUrl ? "yes" : "no"} runtime_service=${runtime.supabaseServiceKey ? "yes" : "no"} worker=${workerDiag ?? "none"}`;
 }
 
 function publicProvisioningError(error: unknown, request: Request) {
@@ -161,14 +161,11 @@ export const Route = createFileRoute("/api/public/telegram/webhook")({
   server: {
     handlers: {
       POST: async ({ request }) => {
-        const token =
-          process.env.TELEGRAM_BOT_TOKEN ??
-          request.headers.get(TELEGRAM_PATH_TOKEN_HEADER) ??
-          undefined;
+        const runtime = getWorkerRuntime();
+        const token = runtime.botToken ?? request.headers.get(TELEGRAM_PATH_TOKEN_HEADER) ?? undefined;
         if (!token) return new Response("Not configured", { status: 500 });
-        process.env.TELEGRAM_BOT_TOKEN ??= token;
 
-        const expectedSecret = process.env.TELEGRAM_WEBHOOK_SECRET;
+        const expectedSecret = runtime.telegramWebhookSecret;
         if (expectedSecret) {
           const got = request.headers.get("X-Telegram-Bot-Api-Secret-Token");
           if (got !== expectedSecret) {

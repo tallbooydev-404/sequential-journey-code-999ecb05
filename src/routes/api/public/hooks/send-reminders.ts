@@ -1,9 +1,10 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { getWorkerRuntime } from "@/lib/worker-runtime";
 
 const TG_API = "https://api.telegram.org";
 
 function miniAppButton() {
-  const url = process.env.MINI_APP_URL || process.env.VITE_MINI_APP_URL;
+  const url = getWorkerRuntime().miniAppUrl;
   if (!url) return undefined;
   return {
     inline_keyboard: [[{ text: "📱 Ilovani ochish", web_app: { url } }]],
@@ -11,7 +12,7 @@ function miniAppButton() {
 }
 
 async function tgSend(chatId: number, text: string) {
-  const token = process.env.TELEGRAM_BOT_TOKEN;
+  const token = getWorkerRuntime().botToken;
   if (!token) return;
   try {
     const body: Record<string, unknown> = {
