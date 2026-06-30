@@ -408,42 +408,73 @@ Bekor qilish: /cancel`,
           const fullName = pending.full_name ?? fromFirstName ?? `user${chatId}`;
           const tgUser = pending.telegram_username ?? fromUsername ?? null;
 
-          const { data: created, error: createErr } = await supabaseAdmin.auth.admin.createUser({
-            email,
-            password,
-            email_confirm: true,
-            user_metadata: { full_name: fullName },
-          });
+          try {
+            const { data: userList, error: listErr } = await supabaseAdmin.auth.admin.listUsers();
+            if (listErr) throw listErr;
 
-          if (createErr || !created.user) {
-            await tgSend(
-              chatId,
-              `❌ Ro'yxatdan o'tishda xatolik: ${createErr?.message ?? "noma'lum"}. Qayta urinib ko'ring: /register`,
-            );
-            await supabaseAdmin
-              .from("telegram_pending_registrations")
-              .delete()
-              .eq("chat_id", chatId);
-            return Response.json({ ok: true });
-          }
+            const existingUser = userList.users.find((user) => user.email === email);
+            let userId = existingUser?.id;
+            let createdAccount = false;
 
-          // Profile is auto-created by handle_new_user trigger; update Telegram fields.
-          await supabaseAdmin
-            .from("profiles")
-            .update({
+            if (userId) {
+              const { error: updateErr } = await supabaseAdmin.auth.admin.updateUserById(userId, {
+                password,
+                email_confirm: true,
+                user_metadata: { full_name: fullName },
+              });
+              if (updateErr) throw updateErr;
+            } else {
+              const { data: created, error: createErr } = await supabaseAdmin.auth.admin.createUser({
+                email,
+                password,
+                email_confirm: true,
+                user_metadata: { full_name: fullName },
+              });
+              if (createErr) throw createErr;
+              userId = created.user?.id;
+              createdAccount = true;
+            }
+
+            if (!userId) throw new Error("Supabase user yaratilmadi");
+
+            // Profile is usually auto-created by handle_new_user trigger, but upsert here
+            // guarantees that Telegram registration always finishes with a usable login code.
+            const { error: profileErr } = await supabaseAdmin.from("profiles").upsert({
+              id: userId,
               telegram_id: chatId,
               telegram_username: tgUser,
               full_name: fullName,
-            })
-            .eq("id", created.user.id);
+            });
+            if (profileErr) throw profileErr;
 
-          await supabaseAdmin.from("telegram_pending_registrations").delete().eq("chat_id", chatId);
+            if (isAdminChat(chatId)) {
+              await supabaseAdmin
+                .from("user_roles")
+                .delete()
+                .eq("user_id", userId)
+                .neq("role", "admin");
+              const { error: roleErr } = await supabaseAdmin
+                .from("user_roles")
+                .upsert({ user_id: userId, role: "admin" }, { onConflict: "user_id,role" });
+              if (roleErr) throw roleErr;
+            }
 
-          await tgSend(
-            chatId,
-            `✅ <b>Tabriklaymiz, ${fullName}!</b>\n\nHisobingiz yaratildi.\n\n🌐 <b>Web saytga kirish:</b>\n• Login (username): <code>tg${chatId}</code>${tgUser ? " yoki <code>" + tgUser + "</code>" : ""}\n• Parol: o'zingiz tanlagan parol\n\nIlovani Telegramda ochish uchun pastdagi tugmani bosing 👇`,
-            true,
-          );
+            await supabaseAdmin.from("telegram_pending_registrations").delete().eq("chat_id", chatId);
+
+            await tgSend(
+              chatId,
+              `✅ <b>Tabriklaymiz, ${fullName}!</b>\n\n${createdAccount ? "Hisobingiz yaratildi" : "Mavjud hisobingiz yangilandi"} va botga ulandi.\n\n🔑 <b>Sizning kodingiz:</b> <code>tg${chatId}</code>\n\n🌐 <b>Web saytga kirish:</b>\n• Login (username): <code>tg${chatId}</code>${tgUser ? " yoki <code>" + tgUser + "</code>" : ""}\n• Parol: o'zingiz tanlagan parol${isAdminChat(chatId) ? "\n\n🛡 Sizga admin huquqi berildi." : ""}\n\nIlovani Telegramda ochish uchun pastdagi tugmani bosing 👇`,
+              true,
+              undefined,
+              new URL("/", request.url).toString(),
+            );
+          } catch (error) {
+            console.error(error);
+            await tgSend(
+              chatId,
+              `❌ Ro'yxatdan o'tishda xatolik: ${publicProvisioningError(error, request)}\n\nQayta urinib ko'ring: /register`,
+            );
+          }
           return Response.json({ ok: true });
         }
 
