@@ -1,7 +1,7 @@
 import { createServerFn } from "@tanstack/react-start";
 
 /**
- * Resolves a user-facing login (email, "tg<chatId>", or telegram username)
+ * Resolves a user-facing login (email, raw Telegram user_id, "tg<chatId>", or telegram username)
  * to the actual auth email used in Supabase. Returns the email or null.
  *
  * Public function — only returns synthetic emails (no PII).
@@ -17,7 +17,9 @@ export const resolveLoginEmail = createServerFn({ method: "POST" })
     // 1) Already an email
     if (login.includes("@")) return { email: login };
 
-    // 2) tg<digits> pattern
+    // 2) Raw Telegram user_id or tg<digits> pattern
+    const rawUserId = login.match(/^(\d+)$/);
+    if (rawUserId) return { email: `tg${rawUserId[1]}@telegram.local` };
     const m = login.match(/^tg(\d+)$/i);
     if (m) return { email: `tg${m[1]}@telegram.local` };
 

@@ -6,6 +6,7 @@ const TELEGRAM_PATH_TOKEN_HEADER = "X-Internal-Telegram-Path-Token";
 const TELEGRAM_ENV_DIAG_HEADER = "X-Internal-Env-Diag";
 
 type TelegramFrom = {
+  id?: number;
   username?: string;
   first_name?: string;
 };
@@ -104,9 +105,15 @@ async function tgSend(
   );
 }
 
-function startKeyboard() {
+function startKeyboard(request: Request) {
+  const url = normalizeHttpsUrl(appLinkText(request));
+  const button = url
+    ? { text: "🔗 Hozirgi havola", web_app: { url } }
+    : { text: "🔗 Hozirgi havola" };
   return {
-    inline_keyboard: [[{ text: "🔗 Havola", callback_data: "app:link" }]],
+    keyboard: [[button]],
+    resize_keyboard: true,
+    one_time_keyboard: false,
   };
 }
 
@@ -123,7 +130,12 @@ function appLinkKeyboard(request: Request) {
 function emailForChat(chatId: number) {
   return `tg${chatId}@telegram.local`;
 }
-const DEFAULT_TELEGRAM_PASSWORD = "Applicant001";
+
+function randomTelegramPassword() {
+  const bytes = new Uint8Array(12);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
 
 function adminIds(): Set<string> {
   return new Set(
@@ -138,11 +150,12 @@ function isAdminChat(chatId: number) {
   return adminIds().has(String(chatId));
 }
 
-function loginText(chatId: number, tgUser?: string | null) {
+function loginText(chatId: number, password: string, tgUser?: string | null) {
+  const usernameLogin = tgUser ? `<code>${tgUser}</code> yoki ` : "";
   return `🌐 <b>Tizimga kirish uchun:</b>
 
-Login: <code>tg${chatId}</code>${tgUser ? " yoki <code>" + tgUser + "</code>" : ""}
-Parol: <code>${DEFAULT_TELEGRAM_PASSWORD}</code>`;
+Login: ${usernameLogin}user_id <code>${chatId}</code>
+Parol: <code>${password}</code>`;
 }
 
 function consentKeyboard() {
@@ -253,16 +266,12 @@ export const Route = createFileRoute("/api/public/telegram/webhook")({
 
           if (callbackQuery?.id) await answerCallback(callbackQuery.id, token);
 
-          if (callbackData === "app:link") {
+          if (callbackData === "app:link" || text === "🔗 Hozirgi havola") {
             const appUrl = appLinkText(request);
             await send(chatId, appUrl, false, appLinkKeyboard(request));
             return Response.json({ ok: true });
           }
 
-          if (text === "/start") {
-            await send(chatId, loginText(chatId, fromUsername), false, startKeyboard());
-            return Response.json({ ok: true });
-          }
 
           const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
 
@@ -276,24 +285,30 @@ export const Route = createFileRoute("/api/public/telegram/webhook")({
             return data;
           };
 
-          // ---------- Consent callbacks ----------
           const provisionTelegramUser = async (fullName?: string | null) => {
             const email = emailForChat(chatId);
             const displayName = fullName || fromFirstName || fromUsername || `user${chatId}`;
             const tgUser = fromUsername ?? null;
 
-            const existingProfile = await linkedProfile();
-            if (existingProfile) return { profile: existingProfile, created: false, tgUser };
+            // Existing Telegram users still receive a fresh random password on /start.
+            const password = randomTelegramPassword();
 
             const { data: userList, error: listErr } = await supabaseAdmin.auth.admin.listUsers();
             if (listErr) throw listErr;
             const existingUser = userList.users.find((user) => user.email === email);
             let userId = existingUser?.id;
-            if (!userId) {
+            if (userId) {
+              const { error: updateErr } = await supabaseAdmin.auth.admin.updateUserById(userId, {
+                password,
+                email_confirm: true,
+                user_metadata: { full_name: displayName },
+              });
+              if (updateErr) throw updateErr;
+            } else {
               const { data: created, error: createErr } = await supabaseAdmin.auth.admin.createUser(
                 {
                   email,
-                  password: DEFAULT_TELEGRAM_PASSWORD,
+                  password,
                   email_confirm: true,
                   user_metadata: { full_name: displayName },
                 },
@@ -304,12 +319,13 @@ export const Route = createFileRoute("/api/public/telegram/webhook")({
 
             if (!userId) throw new Error("Supabase user yaratilmadi");
 
-            await supabaseAdmin.from("profiles").upsert({
+            const { error: profileErr } = await supabaseAdmin.from("profiles").upsert({
               id: userId,
               telegram_id: chatId,
               telegram_username: tgUser,
               full_name: displayName,
             });
+            if (profileErr) throw profileErr;
 
             if (isAdminChat(chatId)) {
               await supabaseAdmin
@@ -331,9 +347,34 @@ export const Route = createFileRoute("/api/public/telegram/webhook")({
             return {
               profile: profile ?? { id: userId, full_name: displayName, telegram_username: tgUser },
               created: !existingUser,
+              password,
               tgUser,
             };
           };
+
+          if (text === "/start") {
+            try {
+              const { profile, created, password, tgUser } = await provisionTelegramUser();
+              await supabaseAdmin
+                .from("telegram_pending_registrations")
+                .delete()
+                .eq("chat_id", chatId);
+              await send(
+                chatId,
+                `👋 Salom, <b>${profile.full_name ?? fromFirstName ?? "do'st"}</b>!\n\n${created ? "✅ Hisobingiz yaratildi va bazaga saqlandi." : "✅ Hisobingiz bazada yangilandi."}${isAdminChat(chatId) ? "\n\n🛡 Sizga admin huquqi berildi." : ""}\n\n${loginText(chatId, password, profile.telegram_username ?? tgUser)}\n\nPastdagi menyudan <b>🔗 Hozirgi havola</b> tugmasini bosib ilovani ochishingiz mumkin.`,
+                false,
+                startKeyboard(request),
+              );
+            } catch (error) {
+              console.error(error);
+              await send(
+                chatId,
+                `❌ /start vaqtida hisob yaratishda xatolik: ${publicProvisioningError(error, request)}`,
+              );
+            }
+            return Response.json({ ok: true });
+          }
+
 
           // ---------- Consent callbacks ----------
           if (callbackData === "consent:retry") {
@@ -392,14 +433,14 @@ Bekor qilish: /cancel`,
           // ---------- Commands ----------
           if (text === "/help" || text === "/register") {
             try {
-              const { profile, created, tgUser } = await provisionTelegramUser();
+              const { profile, created, password, tgUser } = await provisionTelegramUser();
               await supabaseAdmin
                 .from("telegram_pending_registrations")
                 .delete()
                 .eq("chat_id", chatId);
               await send(
                 chatId,
-                `👋 Salom, <b>${profile.full_name ?? fromFirstName ?? "do'st"}</b>!\n\n${created ? "✅ Hisobingiz yaratildi va web ilova bilan ulandi." : "✅ Hisobingiz web ilova bilan ulangan."}${isAdminChat(chatId) ? "\n\n🛡 Sizga admin huquqi berildi." : ""}\n\n${loginText(chatId, profile.telegram_username ?? tgUser)}\n\nIlovani Telegramda ochish uchun pastdagi tugmani bosing 👇`,
+                `👋 Salom, <b>${profile.full_name ?? fromFirstName ?? "do'st"}</b>!\n\n${created ? "✅ Hisobingiz yaratildi va web ilova bilan ulandi." : "✅ Hisobingiz web ilova bilan ulangan."}${isAdminChat(chatId) ? "\n\n🛡 Sizga admin huquqi berildi." : ""}\n\n${loginText(chatId, password, profile.telegram_username ?? tgUser)}\n\nIlovani Telegramda ochish uchun pastdagi tugmani bosing 👇`,
                 true,
                 undefined,
                 new URL("/", request.url).toString(),
